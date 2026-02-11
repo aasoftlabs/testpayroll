@@ -167,7 +167,7 @@ export const generatePDFContent = (
     // Use Number() to remove trailing zeros (e.g., "1.00" -> 1, "1.50" -> 1.5)
     lopValue = Number(lop.toFixed(2)).toString();
   } catch (e) {
-    console.error("Error calculating LOP", e);
+
     lopValue = employee["LWP/Absent"] || "0"; // Fallback
   }
 

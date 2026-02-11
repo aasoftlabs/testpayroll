@@ -1,6 +1,35 @@
 import { NextResponse } from "next/server";
 import nodemailer from "nodemailer";
 
+// 1. PERSISTENT TRANSPORTER
+// Defining this outside the handler allows connection pooling to work
+let transporter = null;
+
+const getTransporter = (config) => {
+  // If transporter doesn't exist, create it with pooling enabled
+  if (!transporter) {
+    transporter = nodemailer.createTransport({
+      pool: true,                // CRITICAL: Reuses connections
+      maxConnections: 5,         // Matches your frontend batch size
+      maxMessages: 100,          // Rotates connection after 100 emails to prevent timeouts
+      host: config.host,
+      port: config.port,
+      secure: config.secure,
+      auth: {
+        user: config.user,
+        pass: config.pass,
+      },
+      tls: {
+        // Only reject unauthorized in production with valid certs
+        rejectUnauthorized: process.env.NODE_ENV === "production",
+      },
+      connectionTimeout: 10000,  // 10 seconds
+      greetingTimeout: 5000,     // 5 seconds
+    });
+  }
+  return transporter;
+};
+
 export async function POST(request) {
   try {
     const {
@@ -10,29 +39,17 @@ export async function POST(request) {
       month,
       year,
       netSalary,
-      designation,
       brandColor,
       companyName,
     } = await request.json();
 
-    // 1. Validate required fields
+    // Basic Validation
     if (!employeeEmail || !pdfBase64 || !employeeName) {
-      return NextResponse.json(
-        { error: "Missing required fields" },
-        { status: 400 },
-      );
+      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
-    // Default company name if not provided
-    const displayCompanyName =
-      companyName || "Techser Power Solutions Pvt. Ltd.";
-
-    // 2. CRITICAL FIX: Clean the Base64 string
-    // This removes the "data:application/pdf;base64," prefix if it exists
-    const base64Data = pdfBase64.replace(/^data:application\/pdf;base64,/, "");
-    const pdfBuffer = Buffer.from(base64Data, "base64");
-
-    // 3. Fetch SMTP details from Firestore
+    // 2. SMTP CONFIGURATION
+    // Use Environment Variables as fallback
     let smtpConfig = {
       host: process.env.SMTP_HOST,
       port: parseInt(process.env.SMTP_PORT || "587"),
@@ -41,12 +58,10 @@ export async function POST(request) {
       secure: process.env.SMTP_SECURE === "true",
     };
 
+    // Fetch from Firestore if available
     try {
       const { adminDb } = await import("@/lib/firebaseAdmin");
-      const profileDoc = await adminDb
-        .collection("companies")
-        .doc("main-profile")
-        .get();
+      const profileDoc = await adminDb.collection("companies").doc("main-profile").get();
       if (profileDoc.exists) {
         const data = profileDoc.data();
         if (data.smtpHost) {
@@ -55,136 +70,67 @@ export async function POST(request) {
             port: parseInt(data.smtpPort || "587"),
             user: data.smtpUser,
             pass: data.smtpPassword,
-            secure: data.smtpSecure === true, // Ensure boolean
+            secure: data.smtpSecure === true,
           };
         }
       }
     } catch (e) {
-      console.warn("Failed to fetch SMTP settings from DB, using fallback:", e);
+      console.warn("Using environment variables for SMTP");
     }
 
-    const transporter = nodemailer.createTransport({
-      host: smtpConfig.host,
-      port: smtpConfig.port,
-      secure: smtpConfig.secure,
-      auth: {
-        user: smtpConfig.user,
-        pass: smtpConfig.pass,
-      },
-      tls: {
-        // Warning: Set this to true in production if you have valid certs
-        rejectUnauthorized: process.env.NODE_ENV === "production",
-      },
-      connectionTimeout: 10000,
-    });
+    // 3. GET POOLED TRANSPORTER
+    const activeTransporter = getTransporter(smtpConfig);
 
-    // 4. Prepare email content
-    const subject = `Salary Slip - ${month} ${year} - ${employeeName}`;
-    const formattedSalary = netSalary
-      ? Number(netSalary).toLocaleString("en-IN")
-      : "0";
+    // 4. PREPARE ATTACHMENT
+    const base64Data = pdfBase64.replace(/^data:application\/pdf;base64,/, "");
+    const pdfBuffer = Buffer.from(base64Data, "base64");
 
-    const htmlBody = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta name="color-scheme" content="light">
-        <meta name="supported-color-schemes" content="light">
-        <style>
-          :root {
-            color-scheme: light;
-          }
-          body { 
-            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; 
-            line-height: 1.6; 
-            color: #333333 !important; 
-            background-color: #f4f4f4 !important; 
-            margin: 0; 
-            padding: 0; 
-            -webkit-font-smoothing: antialiased;
-          }
-          .container { 
-            max-width: 900px; 
-            margin: 40px auto; 
-            background: #ffffff !important; 
-            border-radius: 8px; 
-            box-shadow: 0 4px 6px rgba(0,0,0,0.05); 
-            overflow: hidden; 
-            border: 1px solid #e5e7eb; 
-          }
-          .header { background: #1e293b !important; color: #ffffff !important; padding: 24px 30px; border-bottom: 4px solid ${brandColor}; }
-          .header h1 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: 0.5px; color: #ffffff !important; }
-          .content { padding: 40px 30px; background: #ffffff !important; color: #333333 !important; }
-          .table-container { margin: 25px 0; border-radius: 6px; overflow: hidden; background: #ffffff !important; }
-          .info-table { width: 100%; border-collapse: collapse; background: #ffffff !important; }
-          .info-table td { padding: 16px 24px; border-bottom: 1px solid #f3f4f6; font-size: 14px; color: #333333 !important; }
-          .info-table tr:last-child td { border-bottom: none; }
-          .label { color: #6b7280 !important; font-weight: 500; width: 150px; background: #f9fafb !important; }
-          .value { color: #111827 !important; font-weight: 600; }
-          .footer { background: #f9fafb !important; padding: 20px; border-top: 1px solid #e5e7eb; }
-          
-          /* Dark Mode Overrides */
-          @media (prefers-color-scheme: dark) {
-            body { background-color: #f4f4f4 !important; color: #333333 !important; }
-            .container { background-color: #ffffff !important; color: #333333 !important; }
-            .content { background-color: #ffffff !important; color: #333333 !important; }
-            .label { background-color: #f9fafb !important; color: #6b7280 !important; }
-            .value { color: #111827 !important; }
-          }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="header">
-            <h1>Salary Statement</h1>
-          </div>
-          <div class="content">
-            <p style="margin-top: 0; color: #374151;">Dear <strong>${employeeName}</strong>,</p>
-            <p style="color: #4b5563;">Your salary for the month of <strong>${month} ${year}</strong> has been successfully processed and credited.</p>
-            <p style="color: #4b5563; font-size: 14px;">Please find your detailed payslip attached to this email for your records.</p>
-          </div>
-          <div class="footer">
-            <table width="100%" border="0" cellspacing="0" cellpadding="0">
-              <tr>
-                <td align="center" style="color: #6b7280; font-size: 14px;">
-                  &copy; ${new Date().getFullYear()} <span style="color: ${brandColor}; font-weight: 600;">${displayCompanyName}</span> All rights reserved.
-                </td>
-              </tr>
-            </table>
-          </div>
-        </div>
-      </body>
-      </html>
-    `;
+    // 5. EMAIL TEMPLATE
+    const displayCompany = companyName || "Your Company Name";
+    const formattedSalary = Number(netSalary || 0).toLocaleString("en-IN");
 
-    // 5. Send email
-    const info = await transporter.sendMail({
-      from: `"HR Department" <${smtpConfig.user}>`,
+    const mailOptions = {
+      from: `"${displayCompany} HR" <${smtpConfig.user}>`,
       to: employeeEmail,
-      subject: subject,
-      html: htmlBody,
+      subject: `Payslip for ${month} ${year} - ${employeeName}`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; border: 1px solid #eee; padding: 20px;">
+          <h2 style="color: ${brandColor || '#1e293b'};">Salary Payslip</h2>
+          <p>Dear <b>${employeeName}</b>,</p>
+          <p>Please find attached your payslip for the month of <b>${month} ${year}</b>.</p>
+          <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+            <tr style="background: #f9fafb;">
+              <td style="padding: 10px; border: 1px solid #eee;"><b>Net Salary Credited</b></td>
+              <td style="padding: 10px; border: 1px solid #eee;">₹ ${formattedSalary}</td>
+            </tr>
+          </table>
+          <p style="font-size: 12px; color: #666;">This is an automated email. Please contact the HR department for any discrepancies.</p>
+          <hr style="border: none; border-top: 1px solid #eee;" />
+          <p style="text-align: center; font-size: 11px; color: #999;">&copy; ${year} ${displayCompany}</p>
+        </div>
+      `,
       attachments: [
         {
-          filename: `Payslip_${employeeName.replace(
-            /\s+/g,
-            "_",
-          )}_${month}_${year}.pdf`,
+          filename: `Payslip_${employeeName.replace(/\s+/g, "_")}_${month}_${year}.pdf`,
           content: pdfBuffer,
           contentType: "application/pdf",
         },
       ],
-    });
+    };
+
+    // 6. SEND
+    const info = await activeTransporter.sendMail(mailOptions);
 
     return NextResponse.json({
       success: true,
       messageId: info.messageId,
-      message: `Email sent to ${employeeEmail}`,
     });
+
   } catch (error) {
-    console.error("Email sending error:", error);
+    console.error("Critical Mail Error:", error.message);
     return NextResponse.json(
       { error: "Failed to send email", details: error.message },
-      { status: 500 },
+      { status: 500 }
     );
   }
 }

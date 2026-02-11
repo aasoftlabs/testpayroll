@@ -47,7 +47,8 @@ export default function App() {
   const [isSending, setIsSending] = useState(false);
   const { user, login, signup, logout, loading, verifyEmail, resetPassword } =
     useAuth();
-
+  // Add this new state near your other state declarations
+const [failedEmails, setFailedEmails] = useState([]);
   // Form states
   const [setupForm, setSetupForm] = useState({
     companyName: "",
@@ -86,6 +87,7 @@ export default function App() {
   const [payrollYear, setPayrollYear] = useState("");
   const [isPeriodFromExcel, setIsPeriodFromExcel] = useState(false);
 
+  const [isErrorModalOpen, setIsErrorModalOpen] = useState(false);
   // Toast State
   const [toast, setToast] = useState({
     show: false,
@@ -722,67 +724,191 @@ export default function App() {
     }
   };
 
-  const executeSendPayslips = async () => {
-    const targetIndices =
-      selectedEmployees.length > 0
-        ? selectedEmployees
-        : employees.map((_, i) => i);
+  // const executeSendPayslips_old = async () => {
+  //   const targetIndices =
+  //     selectedEmployees.length > 0
+  //       ? selectedEmployees
+  //       : employees.map((_, i) => i);
+  //   if (targetIndices.length === 0) return;
+
+  //   setIsSending(true);
+  //   setSendingProgress({ current: 0, total: targetIndices.length });
+
+  //   // Use Global Period
+  //   const month = payrollMonth;
+  //   const year = payrollYear;
+
+  //   for (let i = 0; i < targetIndices.length; i++) {
+  //     const empIndex = targetIndices[i];
+  //     const employee = employees[empIndex];
+  //     setSendingProgress({ current: i + 1, total: targetIndices.length });
+
+  //     try {
+  //       const pdfBase64 = generatePDFBase64(
+  //         employee,
+  //         month,
+  //         year,
+  //         companyProfile,
+  //       );
+
+  //       const response = await fetch("/api/send-email", {
+  //         method: "POST",
+  //         headers: { "Content-Type": "application/json" },
+  //         body: JSON.stringify({
+  //           employeeName: employee.Name,
+  //           employeeEmail: employee.Email,
+  //           pdfBase64,
+  //           month,
+  //           year,
+  //           netSalary: employee["Net Pay"],
+  //           designation: employee.Designation,
+  //           brandColor: companyProfile?.brandColor,
+  //           companyName: companyProfile?.name,
+  //         }),
+  //       });
+
+  //       if (!response.ok) {
+  //         const errorData = await response.json();
+  //         showToast(
+  //           `Failed to send email to ${employee.Email}: ` +
+  //             (errorData.details || errorData.error),
+  //           "error",
+  //         );
+  //       }
+  //     } catch (error) {
+  //       showToast(
+  //         `Error sending to ${employee.Name}: ` + error.message,
+  //         "error",
+  //       );
+  //     }
+  //   }
+
+  //   setIsSending(false);
+  //   showToast("All payslips sent successfully!", "success");
+  // };
+
+
+  
+const ErrorSummaryModal = ({ isOpen, onClose, failedList }) => {
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
+        <div className="p-6 border-b border-slate-100 flex items-center gap-3 text-amber-600">
+          <AlertTriangle size={24} />
+          <h3 className="text-xl font-bold">Email Sending Summary</h3>
+        </div>
+        
+        <div className="p-6">
+          <p className="text-slate-600 text-sm mb-4">
+            The following {failedList.length} email(s) could not be sent. Please check their email addresses or SMTP settings.
+          </p>
+          
+          <div className="bg-slate-50 rounded-lg border border-slate-200 max-h-60 overflow-y-auto">
+            <ul className="divide-y divide-slate-200">
+              {failedList.map((error, idx) => (
+                <li key={idx} className="p-3 text-sm text-slate-700 flex items-start gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-rose-500 mt-1.5 shrink-0" />
+                  {error}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+
+        <div className="p-4 bg-slate-50 flex justify-end gap-3">
+          <button
+            onClick={() => {
+              const text = failedList.join('\n');
+              navigator.clipboard.writeText(text);
+              alert("Copied to clipboard!");
+            }}
+            className="px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-200 rounded-lg transition-colors"
+          >
+            Copy List
+          </button>
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-sm font-medium white bg-indigo-600 text-white hover:bg-indigo-700 rounded-lg transition-colors"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const executeSendPayslips = async () => {
+    const targetIndices = selectedEmployees.length > 0 ? selectedEmployees : employees.map((_, i) => i);
     if (targetIndices.length === 0) return;
 
     setIsSending(true);
+    setFailedEmails([]); // Clear state
+    let localFailures = []; // TRACK LOCALLY to trigger modal immediately
     setSendingProgress({ current: 0, total: targetIndices.length });
 
-    // Use Global Period
-    const month = payrollMonth;
-    const year = payrollYear;
+    const BATCH_SIZE = 5;
+    const MAX_RETRIES = 3;
+    const delay = (ms) => new Promise(res => setTimeout(res, ms));
 
-    for (let i = 0; i < targetIndices.length; i++) {
-      const empIndex = targetIndices[i];
-      const employee = employees[empIndex];
-      setSendingProgress({ current: i + 1, total: targetIndices.length });
+    for (let i = 0; i < targetIndices.length; i += BATCH_SIZE) {
+      const currentBatch = targetIndices.slice(i, i + BATCH_SIZE);
 
-      try {
-        const pdfBase64 = generatePDFBase64(
-          employee,
-          month,
-          year,
-          companyProfile,
-        );
+      await Promise.all(currentBatch.map(async (empIndex) => {
+        const employee = employees[empIndex];
+        let attempt = 0;
+        let success = false;
 
-        const response = await fetch("/api/send-email", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            employeeName: employee.Name,
-            employeeEmail: employee.Email,
-            pdfBase64,
-            month,
-            year,
-            netSalary: employee["Net Pay"],
-            designation: employee.Designation,
-            brandColor: companyProfile?.brandColor,
-            companyName: companyProfile?.name,
-          }),
-        });
-
-        if (!response.ok) {
-          const errorData = await response.json();
-          showToast(
-            `Failed to send email to ${employee.Email}: ` +
-              (errorData.details || errorData.error),
-            "error",
-          );
+        // Validation
+        if (!employee.Email || employee.Email.trim() === "") {
+          localFailures.push(`${employee.Name || 'Unknown'} (Missing Email)`);
+          return;
         }
-      } catch (error) {
-        showToast(
-          `Error sending to ${employee.Name}: ` + error.message,
-          "error",
-        );
-      }
+
+        while (attempt < MAX_RETRIES && !success) {
+          try {
+            const pdfBase64 = generatePDFBase64(employee, payrollMonth, payrollYear, companyProfile);
+            const res = await fetch("/api/send-email", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                employeeName: employee.Name,
+                employeeEmail: employee.Email,
+                pdfBase64,
+                month: payrollMonth,
+                year: payrollYear,
+                netSalary: employee["Net Pay"],
+                brandColor: companyProfile?.brandColor,
+                companyName: companyProfile?.name,
+              }),
+            });
+            if (!res.ok) throw new Error("SMTP Error");
+            success = true;
+          } catch (err) {
+            attempt++;
+            if (attempt < MAX_RETRIES) await delay(2000 * attempt);
+            else localFailures.push(`${employee.Name} (SMTP Failed)`);
+          }
+        }
+      }));
+
+      const progress = Math.min(i + BATCH_SIZE, targetIndices.length);
+      setSendingProgress({ current: progress, total: targetIndices.length });
+      if (progress < targetIndices.length) await delay(1000);
     }
 
+    // FINALIZATION
+    setFailedEmails(localFailures);
     setIsSending(false);
-    showToast("All payslips sent successfully!", "success");
+
+    if (localFailures.length > 0) {
+      setIsErrorModalOpen(true); // TRIGGER MODAL
+      showToast(`${localFailures.length} issues found.`, "warning");
+    } else {
+      showToast("All payslips sent successfully!", "success");
+    }
   };
 
   const sendPayslips = () => {
@@ -1402,6 +1528,12 @@ export default function App() {
         onVerify={handleOTPVerified}
         userEmail={user?.email}
       />
+      <ErrorSummaryModal 
+        isOpen={isErrorModalOpen} 
+        onClose={() => setIsErrorModalOpen(false)} 
+        failedList={failedEmails} 
+      />
     </div>
   );
+  
 }
