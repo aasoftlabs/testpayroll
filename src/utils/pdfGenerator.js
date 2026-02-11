@@ -7,7 +7,7 @@ export const generatePDFContent = (
   employee,
   month,
   year,
-  companyProfile
+  companyProfile,
 ) => {
   const pageWidth = doc.internal.pageSize.getWidth();
   const margin = 15;
@@ -44,7 +44,7 @@ export const generatePDFContent = (
       companyProfile?.name || "TECHSER POWER SOLUTIONS PRIVATE LIMITED"
     ).toUpperCase(),
     headerTextX,
-    currentY + 11
+    currentY + 11,
   );
 
   doc.setFontSize(8);
@@ -64,7 +64,7 @@ export const generatePDFContent = (
     body: [
       [
         "PaySlip",
-        employee["Serial No"] || "1",
+        employee["__autoSerial"] || employee["Serial No"] || "1",
         "Payslip for the month",
         `${month} - ${year}`,
         "Branch",
@@ -89,8 +89,8 @@ export const generatePDFContent = (
       [
         "ESIC No",
         employee["ESIC No"] || "",
-        "PF No",
-        employee["PF No"] || "",
+        "UAN No",
+        employee["UAN No"] || "",
         "",
         "",
       ],
@@ -111,35 +111,7 @@ export const generatePDFContent = (
       4: { fontStyle: "bold", cellWidth: 20, textColor: [70, 70, 70] }, // Branch / AC labels
       5: { cellWidth: 35 },
     },
-    didParseCell: function (data) {
-      // Apply Colors based on reference
-      // Month (Row 0, Col 3): Green
-      if (data.row.index === 0 && data.column.index === 3) {
-        data.cell.styles.textColor = [0, 128, 0];
-      }
-      // Branch (Row 0, Col 5): Green
-      if (data.row.index === 0 && data.column.index === 5) {
-        data.cell.styles.textColor = [0, 128, 0];
-      }
-      // Employee Name (Row 1, Col 3): Green
-      if (data.row.index === 1 && data.column.index === 3) {
-        data.cell.styles.textColor = [0, 128, 0];
-      }
-      // AC No (Row 1, Col 5): Blue
-      if (data.row.index === 1 && data.column.index === 5) {
-        data.cell.styles.textColor = [59, 130, 246];
-      }
-      // AC No (Row 1, Col 5): Blue (if desired, or black) - User said "color text"
-      // Let's keep AC No value Blue as per previous code, or if unknown, Black.
-      // Reference usually has Name/Branch colored.
-
-      // Department (Row 2, Col 1): Orange
-      if (data.row.index === 2 && data.column.index === 1) {
-        data.cell.styles.textColor = [255, 100, 0]; // Bright Orange
-      }
-
-      // Designation can be standard
-    },
+    // didParseCell removed to default all text color to style definition
   });
 
   currentY = doc.lastAutoTable.finalY + 2; // Reduced gap
@@ -154,29 +126,52 @@ export const generatePDFContent = (
   doc.setFont("helvetica", "bold");
   doc.setTextColor(60, 60, 60);
 
+  // Helper to get total days in month
+  const getDaysInMonth = (m, y) => {
+    return new Date(
+      y,
+      new Date(Date.parse(m + " 1, " + y)).getMonth() + 1,
+      0,
+    ).getDate();
+  };
+
+  const totalDaysInMonth = getDaysInMonth(month, year);
+
+  // 1. Total Days (was Days Paid)
   let xPos = margin;
-  doc.text("Days Paid", xPos, currentY + 3);
+  doc.text("Total Days", xPos, currentY + 3);
   doc.setFont("helvetica", "normal");
   doc.setTextColor(59, 130, 246); // Blue
-  doc.text(String(employee["Days Paid"] || "0.00"), xPos + 20, currentY + 3);
+  doc.text(String(totalDaysInMonth), xPos + 20, currentY + 3);
 
+  // 2. Days Paid (was Pd.Off)
   xPos += 60;
   doc.setFont("helvetica", "bold");
   doc.setTextColor(60, 60, 60);
-  doc.text("Pd.Off", xPos, currentY + 3);
+  doc.text("Days Paid", xPos, currentY + 3);
   doc.setFont("helvetica", "normal");
-  doc.text(String(employee["Pd.Off"] || "0.00"), xPos + 15, currentY + 3);
+  doc.text(String(employee["Days Paid"] || 0), xPos + 20, currentY + 3);
 
+  // 3. LOP (Already implemented, just updating calculation to use shared helper if needed)
   xPos += 60;
   doc.setFont("helvetica", "bold");
-  doc.text("LWP/Absent", xPos, currentY + 3);
+  doc.text("LOP", xPos, currentY + 3);
   doc.setFont("helvetica", "normal");
   doc.setTextColor(239, 68, 68); // Red
-  doc.text(
-    String(employee["LWP/Absent"] || "0.00 / 0.00"),
-    xPos + 25,
-    currentY + 3
-  );
+
+  // Auto-calculate LOP: Total Days in Month - Days Paid
+  let lopValue = "0";
+  try {
+    const daysPaid = parseFloat(employee["Days Paid"] || 0);
+    const lop = totalDaysInMonth - daysPaid;
+    // Use Number() to remove trailing zeros (e.g., "1.00" -> 1, "1.50" -> 1.5)
+    lopValue = Number(lop.toFixed(2)).toString();
+  } catch (e) {
+    console.error("Error calculating LOP", e);
+    lopValue = employee["LWP/Absent"] || "0"; // Fallback
+  }
+
+  doc.text(String(lopValue), xPos + 25, currentY + 3);
 
   currentY += 8; // Reduced gap
 
@@ -269,7 +264,7 @@ export const generatePDFContent = (
   // BUT override with Excel values if they exist (per User request to trust Excel)
   let totalEarnings = earnings.reduce(
     (acc, curr) => acc + (Number(curr.val) || 0),
-    0
+    0,
   );
   if (employee["GROSS SALARY"] && Number(employee["GROSS SALARY"]) > 0) {
     totalEarnings = Number(employee["GROSS SALARY"]);
@@ -277,7 +272,7 @@ export const generatePDFContent = (
 
   let totalDeductions = deductions.reduce(
     (acc, curr) => acc + (Number(curr.val) || 0),
-    0
+    0,
   );
   if (employee["TTL DED"] && Number(employee["TTL DED"]) > 0) {
     totalDeductions = Number(employee["TTL DED"]);

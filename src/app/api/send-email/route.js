@@ -19,7 +19,7 @@ export async function POST(request) {
     if (!employeeEmail || !pdfBase64 || !employeeName) {
       return NextResponse.json(
         { error: "Missing required fields" },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
@@ -141,32 +141,13 @@ export async function POST(request) {
           <div class="content">
             <p style="margin-top: 0; color: #374151;">Dear <strong>${employeeName}</strong>,</p>
             <p style="color: #4b5563;">Your salary for the month of <strong>${month} ${year}</strong> has been successfully processed and credited.</p>
-            
-            <div class="table-container">
-              <table class="info-table">
-                <tr>
-                  <td class="label">Pay Period: </td>
-                  <td class="value">${month} ${year}</td>
-                </tr>
-                <tr>
-                  <td class="label">Designation: </td>
-                  <td class="value">${designation || "N/A"}</td>
-                </tr>
-                <tr>
-                  <td class="label">Net Payable: </td>
-                  <td class="value" style="color: #059669;">₹${formattedSalary}</td>
-                </tr>
-              </table>
-            </div>
-
             <p style="color: #4b5563; font-size: 14px;">Please find your detailed payslip attached to this email for your records.</p>
-            
           </div>
           <div class="footer">
             <table width="100%" border="0" cellspacing="0" cellpadding="0">
               <tr>
                 <td align="center" style="color: #6b7280; font-size: 14px;">
-                  &copy; ${year} <span style="color: ${brandColor}; font-weight: 600;">${displayCompanyName}</span> All rights reserved.
+                  &copy; ${new Date().getFullYear()} <span style="color: ${brandColor}; font-weight: 600;">${displayCompanyName}</span> All rights reserved.
                 </td>
               </tr>
             </table>
@@ -186,7 +167,7 @@ export async function POST(request) {
         {
           filename: `Payslip_${employeeName.replace(
             /\s+/g,
-            "_"
+            "_",
           )}_${month}_${year}.pdf`,
           content: pdfBuffer,
           contentType: "application/pdf",
@@ -203,7 +184,7 @@ export async function POST(request) {
     console.error("Email sending error:", error);
     return NextResponse.json(
       { error: "Failed to send email", details: error.message },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
